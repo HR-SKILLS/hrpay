@@ -1,0 +1,33 @@
+# Documentation interne — marquée « Confidentiel », ne pas publier
+*.pdf
+
+# Binaires et artefacts de build
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/bin/
+/dist/
+
+# Couverture
+coverage.txt
+coverage.html
+profile.cov
+
+# Secrets & caches de token
+.env
+.env.*
+*.pem
+.hrpay-token.json
+*-token-cache.json
+
+# Outils / éditeurs
+.idea/
+.vscode/
+.DS_Store
+
+# Workspaces Go
+go.work
+go.work.sum
