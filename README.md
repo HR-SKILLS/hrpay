@@ -1019,4 +1019,3 @@ Le SDK embarque une suite de **tests de conformité** ([`conformance_test.go`](c
 ## Licence
 
 MIT © [HR-Skills Pay](https://hrskills-pay.com)
-# hrpay
