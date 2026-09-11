@@ -13,10 +13,11 @@ type WebhookEventDefinition struct {
 }
 
 type WebhookEvent struct {
-	ID        string          `json:"id"`
-	Type      string          `json:"type"`
-	CreatedAt string          `json:"created_at"`
-	Data      json.RawMessage `json:"data"`
+	ID         string          `json:"id"`
+	Type       string          `json:"event"` // wire field is "event", e.g. "payment.succeeded"
+	MerchantID string          `json:"merchant_id,omitempty"`
+	CreatedAt  string          `json:"created_at"`
+	Data       json.RawMessage `json:"data"`
 }
 
 type WebhooksService struct {

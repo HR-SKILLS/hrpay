@@ -73,7 +73,7 @@ func main() {
 		log.Printf("Failed to initiate cash-in: %v", err)
 	} else {
 		fmt.Printf("   ✅ Accepté — ref %s, statut %s\n", tx.Reference, tx.Status)
-		fmt.Printf("      frais %.0f (%.1f%%), net %.0f\n", tx.Fee, tx.FeePercent, tx.NetAmount)
+		fmt.Printf("      frais %.0f (%.1f%%), net %.0f\n", tx.Fees, tx.FeePercent, tx.NetAmount)
 
 		// 3. Polling jusqu'au statut final
 		fmt.Println("\n-> Polling transaction status...")
@@ -96,6 +96,7 @@ func main() {
 	_, err = client.CashIn.MobileMoney(ctx, hrpay.CashInMobileMoneyParams{
 		PhoneNumber: "237655500393",
 		Operator:    hrpay.OperatorOrange,
+		Country:     hrpay.CountryCm,
 		Amount:      50, // < 100
 	})
 	var valErr *hrpay.ValidationError

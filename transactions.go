@@ -10,13 +10,13 @@ import (
 )
 
 type TransactionListParams struct {
-	Status      string   `json:"status,omitempty"`
-	Type        string   `json:"type,omitempty"`
-	Operator    Operator `json:"operator,omitempty"`
-	From        string   `json:"from,omitempty"`
-	To          string   `json:"to,omitempty"`
-	Page        int      `json:"page,omitempty"`
-	Limit       int      `json:"limit,omitempty"`
+	Status   string   `json:"status,omitempty"`
+	Type     string   `json:"type,omitempty"`
+	Operator Operator `json:"operator,omitempty"`
+	From     string   `json:"from,omitempty"`
+	To       string   `json:"to,omitempty"`
+	Page     int      `json:"page,omitempty"`
+	Limit    int      `json:"limit,omitempty"`
 }
 
 type PollOptions struct {
@@ -39,6 +39,34 @@ func (s *TransactionsService) Status(ctx context.Context, reference string) (*Tr
 
 	path := fmt.Sprintf("%s/%s", PathPaymentStatus, reference)
 	respBody, err := s.client.request(ctx, "GET", path, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var envelope ApiResponse[Transaction]
+	if err := json.Unmarshal(respBody, &envelope); err == nil && envelope.Success {
+		return &envelope.Data, nil
+	}
+
+	var direct Transaction
+	if err := json.Unmarshal(respBody, &direct); err != nil {
+		return nil, err
+	}
+	return &direct, nil
+}
+
+// Refund reverses a completed CASHIN transaction by reference. Requires an
+// Idempotency-Key (auto-generated unless you attach one via
+// WithIdempotencyKey for a safe client-side retry). Triggers the
+// payment.refunded webhook on success.
+// Endpoint: POST /v1/payments/:reference/refund
+func (s *TransactionsService) Refund(ctx context.Context, reference string) (*Transaction, error) {
+	if reference == "" {
+		return nil, errors.New("[hrpay] Reference is required")
+	}
+
+	path := fmt.Sprintf("%s/%s/refund", PathPaymentStatus, reference)
+	respBody, err := s.client.request(ctx, "POST", path, nil, nil)
 	if err != nil {
 		return nil, err
 	}

@@ -14,13 +14,27 @@ import (
 	"github.com/hr-skills/hrpay/internal/transport"
 )
 
+// authMode selects which credentials createAuthMiddleware attaches to a request.
+type authMode int
+
+const (
+	// authModeSecretAndToken sends Authorization: Bearer <SecretKey> plus
+	// X-Transaction-Token. This is the mode nearly every payment/resource
+	// endpoint requires, and the zero value so existing call sites need no change.
+	authModeSecretAndToken authMode = iota
+	// authModeSecretOnly sends Authorization: Bearer <SecretKey> with no
+	// X-Transaction-Token header at all (e.g. GET /v1/wallet/balance).
+	authModeSecretOnly
+)
+
 type MiddlewareContext struct {
-	Method  string
-	URL     string
-	Headers map[string]string
-	Body    []byte
+	Method   string
+	URL      string
+	Headers  map[string]string
+	Body     []byte
 	Response *transport.Response
 	Meta     map[string]interface{}
+	AuthMode authMode
 }
 
 type Next func(ctx context.Context, mctx *MiddlewareContext) error
@@ -140,7 +154,7 @@ func createThrottleMiddleware(minDelay time.Duration) Middleware {
 
 func createRetryMiddleware(maxRetries int) Middleware {
 	retryableStatuses := map[int]bool{
-		http.StatusTooManyRequests:    true,
+		http.StatusTooManyRequests:     true,
 		http.StatusInternalServerError: true,
 		http.StatusBadGateway:          true,
 		http.StatusServiceUnavailable:  true,
@@ -213,14 +227,24 @@ func isRetryableError(err error) bool {
 		strings.Contains(errStr, "dial")
 }
 
-func createAuthMiddleware(publicKey string, authManager *AuthManager) Middleware {
+// createAuthMiddleware attaches merchant credentials to every request.
+// secretKey (Clé B) always goes in Authorization — payment/resource endpoints
+// require the secret key here, never the public key (Clé A is only used to
+// obtain the transaction token itself, in auth.go, which bypasses this
+// middleware entirely). X-Transaction-Token is added unless the call opted
+// into authModeSecretOnly (e.g. wallet balance).
+func createAuthMiddleware(secretKey string, authManager *AuthManager) Middleware {
 	return func(ctx context.Context, mctx *MiddlewareContext, next Next) error {
+		mctx.Headers[HeaderAuthorization] = fmt.Sprintf("Bearer %s", secretKey)
+
+		if mctx.AuthMode == authModeSecretOnly {
+			return next(ctx, mctx)
+		}
+
 		token, err := authManager.GetToken(ctx)
 		if err != nil {
 			return err
 		}
-
-		mctx.Headers[HeaderAuthorization] = fmt.Sprintf("Bearer %s", publicKey)
 		mctx.Headers[HeaderTransactionToken] = token
 		return next(ctx, mctx)
 	}
@@ -237,7 +261,11 @@ func createIdempotencyMiddleware() Middleware {
 		method := strings.ToUpper(mctx.Method)
 		if mutatingMethods[method] {
 			if _, exists := mctx.Headers[HeaderIdempotencyKey]; !exists {
-				mctx.Headers[HeaderIdempotencyKey] = uuid.New().String()
+				if key, ok := idempotencyKeyFromContext(ctx); ok {
+					mctx.Headers[HeaderIdempotencyKey] = key
+				} else {
+					mctx.Headers[HeaderIdempotencyKey] = uuid.New().String()
+				}
 			}
 		}
 		return next(ctx, mctx)

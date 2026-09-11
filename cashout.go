@@ -11,8 +11,9 @@ type CashOutMobileMoneyParams struct {
 	PhoneNumber string   `json:"phone_number"`
 	Operator    Operator `json:"operator"`
 	Amount      float64  `json:"amount"`
+	Country     Country  `json:"country"`
+	Reference   string   `json:"reference,omitempty"`
 	Currency    Currency `json:"currency,omitempty"`
-	Country     Country  `json:"country,omitempty"`
 	Description string   `json:"description,omitempty"`
 }
 
@@ -27,39 +28,29 @@ func (p *CashOutMobileMoneyParams) Validate() error {
 	if p.Operator == "" {
 		return &ValidationError{Issues: []ValidationIssue{{Field: "Operator", Message: "Operator is required"}}}
 	}
+	if p.Country == "" {
+		return &ValidationError{Issues: []ValidationIssue{{Field: "Country", Message: "Country is required"}}}
+	}
 	if p.Amount <= 0 {
 		return &ValidationError{Issues: []ValidationIssue{{Field: "Amount", Message: "Amount must be positive"}}}
 	}
 	return nil
 }
 
-type CashOutResponse struct {
-	TransactionID string  `json:"transaction_id"`
-	Reference     string  `json:"reference"`
-	Status        string  `json:"status"`
-	Type          string  `json:"type"` // CASHOUT
-	Amount        float64 `json:"amount"`
-	Fee           float64 `json:"fee"`
-	FeePercent    float64 `json:"fee_percent"`
-	Currency      string  `json:"currency"`
-	Operator      string  `json:"operator"`
-	PhoneNumber   string  `json:"phone_number"`
-	InitiatedAt   string  `json:"initiated_at"`
-	PendingAction string  `json:"pending_action"`
-}
-
 type CashOutService struct {
 	client *Client
 }
 
-func (s *CashOutService) MobileMoney(ctx context.Context, params CashOutMobileMoneyParams) (*CashOutResponse, error) {
+// MobileMoney disburses a payment from the merchant wallet to a beneficiary's
+// mobile money account. Country is required and never defaulted by the SDK
+// (see CashInService.MobileMoney). Requires an existing wallet in the
+// resulting currency (WALLET_NOT_FOUND otherwise, HTTP 402) — a merchant with
+// no prior cashin in that currency must fund the wallet first.
+func (s *CashOutService) MobileMoney(ctx context.Context, params CashOutMobileMoneyParams) (*Transaction, error) {
 	if err := params.Validate(); err != nil {
 		return nil, err
 	}
 
-	if params.Country == "" {
-		params.Country = CountryCm
-	}
 	if params.Currency == "" {
 		params.Currency = currencyForCountry(params.Country)
 	}
@@ -71,7 +62,9 @@ func (s *CashOutService) MobileMoney(ctx context.Context, params CashOutMobileMo
 		"amount":       params.Amount,
 		"currency":     params.Currency,
 	}
-
+	if params.Reference != "" {
+		payload["reference"] = params.Reference
+	}
 	if params.Description != "" {
 		payload["description"] = params.Description
 	}
@@ -86,12 +79,12 @@ func (s *CashOutService) MobileMoney(ctx context.Context, params CashOutMobileMo
 		return nil, err
 	}
 
-	var envelope ApiResponse[CashOutResponse]
+	var envelope ApiResponse[Transaction]
 	if err := json.Unmarshal(respBody, &envelope); err == nil && envelope.Success {
 		return &envelope.Data, nil
 	}
 
-	var direct CashOutResponse
+	var direct Transaction
 	if err := json.Unmarshal(respBody, &direct); err != nil {
 		return nil, err
 	}

@@ -26,6 +26,31 @@ var (
 	ErrInternalError             = errors.New("INTERNAL_ERROR")
 	ErrProviderNotConfigured     = errors.New("PROVIDER_NOT_CONFIGURED")
 	ErrProviderTimeout           = errors.New("PROVIDER_TIMEOUT")
+
+	// Mobile Money v1 sentinels confirmed current (moved out of the
+	// "deprecated aliases" block below — these are live documented codes,
+	// not legacy artifacts).
+	ErrInvalidPhone        = errors.New("INVALID_PHONE")
+	ErrSandboxKeyRequired  = errors.New("SANDBOX_KEY_REQUIRED")
+	ErrSandboxPathRequired = errors.New("SANDBOX_PATH_REQUIRED")
+
+	ErrInvalidAmount          = errors.New("INVALID_AMOUNT")
+	ErrInvalidOperatorCountry = errors.New("INVALID_OPERATOR_COUNTRY")
+	ErrMissingPhone           = errors.New("MISSING_PHONE")
+	ErrDuplicateReference     = errors.New("DUPLICATE_REFERENCE")
+	ErrWalletNotFound         = errors.New("WALLET_NOT_FOUND")
+	ErrCountryNotActivated    = errors.New("COUNTRY_NOT_ACTIVATED")
+	ErrAmountExceedsLimit     = errors.New("AMOUNT_EXCEEDS_LIMIT")
+	ErrDailyLimitExceeded     = errors.New("DAILY_LIMIT_EXCEEDED")
+	ErrPlanTxLimitReached     = errors.New("PLAN_TX_LIMIT_REACHED")
+	ErrProviderUnavailable    = errors.New("PROVIDER_UNAVAILABLE")
+	ErrTooManyRequests        = errors.New("TOO_MANY_REQUESTS")
+	// ErrCashoutRefused covers every CASHOUT provider-refusal case (422
+	// cashout_refused). The specific numeric provider code, if present,
+	// arrives in SDKError.Details — read SDKError.Message (already
+	// humanized) rather than switching on the raw numeric code. See the
+	// CashoutRefusalXxx constants in constants.go for reference.
+	ErrCashoutRefused = errors.New("cashout_refused")
 )
 
 // Deprecated aliases kept for backwards compatibility with earlier SDK versions.
@@ -41,10 +66,69 @@ var (
 
 	// Not part of the documented v1 error table; retained so existing callers
 	// continue to compile.
-	ErrMerchantInactive    = errors.New("MERCHANT_INACTIVE")
-	ErrSandboxKeyRequired  = errors.New("SANDBOX_KEY_REQUIRED")
-	ErrSandboxPathRequired = errors.New("SANDBOX_PATH_REQUIRED")
-	ErrInvalidPhone        = errors.New("INVALID_PHONE")
+	ErrMerchantInactive = errors.New("MERCHANT_INACTIVE")
+)
+
+// Virtual Cards sentinel errors. Unlike the mobile-money sentinels above,
+// these intentionally match the documented wire codes byte-for-byte
+// (lowercase snake_case, except PLAN_FEATURE_NOT_AVAILABLE which the server
+// emits in SCREAMING_SNAKE) since normalizeCode() only rewrites codes present
+// in legacyCodeAliases, and none of these collide with that table except
+// "insufficient_balance" — see the comment on legacyCodeAliases below.
+var (
+	// 400
+	ErrInvalidMerchantID     = errors.New("invalid_merchant_id")
+	ErrInvalidBrand          = errors.New("invalid_brand")
+	ErrInvalidCardAmount     = errors.New("invalid_amount")
+	ErrCustomerNotEnrolled   = errors.New("customer_not_enrolled")
+	ErrEnvironmentMismatch   = errors.New("environment_mismatch")
+	ErrCardNotActive         = errors.New("card_not_active")
+	ErrCardNotEligible       = errors.New("card_not_eligible")
+	ErrCardNotFrozen         = errors.New("card_not_frozen")
+	ErrCardAlreadyTerminated = errors.New("card_already_terminated")
+	ErrInvalidCardAction     = errors.New("invalid_action")
+	ErrInvalidCardID         = errors.New("invalid_card_id")
+	ErrInvalidCardCustomerID = errors.New("invalid_customer_id")
+	ErrInvalidCardCustomer   = errors.New("invalid_customer")
+	ErrInvalidBody           = errors.New("invalid_body")
+	ErrMissingDocuments      = errors.New("missing_documents")
+	ErrInvalidDocument       = errors.New("invalid_document")
+	ErrAmbiguousAmount       = errors.New("ambiguous_amount")
+
+	// 403
+	ErrPlanFeatureNotAvailable    = errors.New("PLAN_FEATURE_NOT_AVAILABLE") // sic
+	ErrTransactionTokenIPMismatch = errors.New("transaction_token_ip_mismatch")
+
+	// 404
+	ErrCardNotFound         = errors.New("card_not_found")
+	ErrCardCustomerNotFound = errors.New("customer_not_found")
+
+	// 409
+	ErrCardCustomerExists = errors.New("customer_exists")
+	ErrRequestInProgress  = errors.New("request_in_progress")
+
+	// 422
+	ErrAmountAboveMax          = errors.New("amount_above_max")
+	ErrAmountTooSmall          = errors.New("amount_too_small")
+	ErrMaxCardsReached         = errors.New("max_cards_reached")
+	ErrCardBalanceInsufficient = errors.New("insufficient_card_balance")
+	ErrCardCreationRejected    = errors.New("card_creation_rejected")
+	ErrCardTopupRejected       = errors.New("card_topup_rejected")
+	ErrCardWithdrawRejected    = errors.New("card_withdraw_rejected")
+	ErrCardActionRejected      = errors.New("card_action_rejected")
+	ErrQuoteFailed             = errors.New("quote_failed")
+
+	// 500
+	ErrCardWithdrawCreditFailed = errors.New("card_withdraw_credit_failed")
+
+	// 502
+	ErrCardProviderError = errors.New("provider_error")
+	ErrCardActionFailed  = errors.New("card_action_failed")
+
+	// 503
+	ErrCardProviderUnavailable = errors.New("provider_unavailable")
+	ErrCardRateUnavailable     = errors.New("rate_unavailable") // FX rate, not request-rate
+	ErrIdempotencyUnavailable  = errors.New("idempotency_unavailable")
 )
 
 // Base SDK Error
@@ -201,20 +285,28 @@ type apiErrorPayload struct {
 
 // legacyCodeAliases maps error codes emitted by pre-v1 backends onto the
 // canonical codes documented in the v1 error table.
+//
+// Note: "insufficient_balance" here is written for the mobile-money/wallet
+// 402 case, but the Virtual Cards domain reuses the exact same literal string
+// for its own 422 "card USD wallet insufficient" error. Both really do mean
+// "the wallet this operation would debit lacks funds", so this alias is
+// intentionally left applying to both — disambiguate by SDKError.StatusCode
+// (402 vs 422) or by concrete error type (*WalletError vs *ValidationError),
+// not by the sentinel alone.
 var legacyCodeAliases = map[string]string{
-	"invalid_request":            "VALIDATION_ERROR",
-	"insufficient_balance":       "WALLET_BALANCE_INSUFFICIENT",
-	"duplicate_transaction":      "IDEMPOTENCY_KEY_CONFLICT",
-	"idempotency_conflict":       "IDEMPOTENCY_KEY_CONFLICT",
-	"kyc_required":               "KYC_NOT_APPROVED",
-	"operator_unavailable":       "OPERATOR_NOT_AVAILABLE",
-	"service_unavailable":        "PROVIDER_NOT_CONFIGURED",
-	"missing_api_key":            "MISSING_API_KEY",
-	"invalid_api_key":            "INVALID_API_KEY",
-	"missing_transaction_token":  "MISSING_TRANSACTION_TOKEN",
-	"invalid_transaction_token":  "INVALID_TRANSACTION_TOKEN",
-	"rate_limit_exceeded":        "RATE_LIMIT_EXCEEDED",
-	"internal_error":             "INTERNAL_ERROR",
+	"invalid_request":           "VALIDATION_ERROR",
+	"insufficient_balance":      "WALLET_BALANCE_INSUFFICIENT",
+	"duplicate_transaction":     "IDEMPOTENCY_KEY_CONFLICT",
+	"idempotency_conflict":      "IDEMPOTENCY_KEY_CONFLICT",
+	"kyc_required":              "KYC_NOT_APPROVED",
+	"operator_unavailable":      "OPERATOR_NOT_AVAILABLE",
+	"service_unavailable":       "PROVIDER_NOT_CONFIGURED",
+	"missing_api_key":           "MISSING_API_KEY",
+	"invalid_api_key":           "INVALID_API_KEY",
+	"missing_transaction_token": "MISSING_TRANSACTION_TOKEN",
+	"invalid_transaction_token": "INVALID_TRANSACTION_TOKEN",
+	"rate_limit_exceeded":       "RATE_LIMIT_EXCEEDED",
+	"internal_error":            "INTERNAL_ERROR",
 }
 
 // normalizeCode resolves a legacy lowercase code to its canonical form.
@@ -294,7 +386,10 @@ func defaultCodeForStatus(statusCode int) string {
 	case 409:
 		return ErrIdempotencyKeyConflict.Error()
 	case 422:
-		return ErrOperatorNotAvailable.Error()
+		// The server should always send an explicit code for 422s (there are
+		// many distinct documented meanings); fall back to the generic
+		// validation sentinel rather than guessing one specific sub-code.
+		return ErrValidation.Error()
 	case 429:
 		return ErrRateLimitExceeded.Error()
 	case 500:

@@ -7,7 +7,7 @@ Infrastructure de paiement B2B pour l'Afrique — **16 pays** : Cameroun, Côte 
 |                    |                                                                |
 | ------------------ | -------------------------------------------------------------- |
 | **Base URL** | `https://api.hrskills-pay.com`                               |
-| **Frais**    | 1,5 % Cash-In · 1 % Cash-Out                                  |
+| **Frais**    | 2 % flat par défaut (Cash-In et Cash-Out) — **non garanti**, des taux négociés existent par marchand. Consultez toujours `client.Fees.List(ctx)`. |
 | **Version**  | v1 · REST JSON                                                |
 | **Sandbox**  | Montant**pair → SUCCESS** · **impair → FAILED** |
 
@@ -30,8 +30,9 @@ Infrastructure de paiement B2B pour l'Afrique — **16 pays** : Cameroun, Côte 
 13. [Liens de paiement](#liens-de-paiement)
 14. [Webhooks](#webhooks)
 15. [Opérateurs &amp; Pays](#opérateurs--pays)
-16. [Gestion des erreurs](#gestion-des-erreurs)
-17. [Configuration &amp; Résilience](#configuration--résilience)
+16. [Pièges connus](#pièges-connus)
+17. [Gestion des erreurs](#gestion-des-erreurs)
+18. [Configuration &amp; Résilience](#configuration--résilience)
 
 ---
 
@@ -161,7 +162,7 @@ func main() {
 
 	fmt.Printf("Référence   : %s\n", tx.Reference)   // ref_d5b40df948dc52cc
 	fmt.Printf("Statut      : %s\n", tx.Status)      // PENDING
-	fmt.Printf("Frais       : %.0f (%.1f%%)\n", tx.Fee, tx.FeePercent) // 75 (1.5%)
+	fmt.Printf("Frais       : %.0f (%.1f%%)\n", tx.Fees, tx.FeePercent) // 75 (1.5%)
 	fmt.Printf("Net crédité : %.0f\n", tx.NetAmount) // 4925
 
 	// 3. Le client confirme sur son téléphone (USSD Orange / push MTN).
@@ -198,11 +199,13 @@ func main() {
 
 Le SDK gère **automatiquement** le mécanisme à double clé + transaction token. Vous n'avez normalement **rien à faire**.
 
-|                                    | Rôle                                                                   |
-| ---------------------------------- | ----------------------------------------------------------------------- |
-| **Clé A** (`hrsk_pk_...`) | Envoyée dans`Authorization: Bearer` à chaque requête               |
-| **Clé B** (`hrsk_sk_...`) | Échangée**une seule fois** contre un JWT. Jamais côté client. |
-| **Transaction Token**        | JWT HMAC-SHA256, TTL**45 min** (`expires_in: 2700`)             |
+|                            | Rôle                                                                                                          |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| **Clé A** (`hrsk_pk_...`) | Envoyée dans `Authorization: Bearer` **uniquement** pour obtenir le Transaction Token.                        |
+| **Clé B** (`hrsk_sk_...`) | Envoyée dans `Authorization: Bearer` sur **tous les appels de paiement/ressource** (payin, payout, refund, cartes…). |
+| **Transaction Token**      | Ajouté en `X-Transaction-Token` sur ces mêmes appels. JWT HMAC-SHA256, TTL **45 min** (`expires_in: 2700`)     |
+
+> ⚠️ **Piège fréquent** : c'est bien la **Clé B** (secrète) qui authentifie les appels de paiement — la Clé A ne sert qu'à l'échange initial du Transaction Token. `GET /v1/wallet/balance` est un cas à part : Clé B **seule**, sans Transaction Token. Le SDK gère cette distinction pour vous automatiquement — vous n'avez jamais à choisir la clé à envoyer vous-même.
 
 Le SDK :
 
@@ -260,13 +263,12 @@ Prélève sur le portefeuille Mobile Money d'un client. **Frais : 1,5 %**.
 | --------------- | -------- | ------ | ---------------------------------------------------------- |
 | `PhoneNumber` | string   | ✅     | Avec indicatif,**sans `+`**. Ex : `237655500393` |
 | `Operator`    | Operator | ✅     | `OperatorMtn`, `OperatorOrange`, `OperatorWave`…    |
+| `Country`     | Country  | ✅     | ISO 3166-1 alpha-2.**Jamais déduit ni par défaut** — la devise est toujours dérivée du pays côté serveur, donc un pays incorrect enverrait la demande au mauvais endroit. |
 | `Amount`      | float64  | ✅     | Devise locale.**Minimum 100.** Pas de décimales.    |
-| `Country`     | Country  | ✅¹   | ISO 3166-1 alpha-2. Défaut :`CountryCm`                 |
-| `Currency`    | Currency | ✅¹   | Défaut :**déduite du pays**                        |
+| `Reference`   | string   | —     | Votre référence unique. Auto-générée (`ref_...`) si omise. Réutiliser une référence déjà utilisée renvoie `409 DUPLICATE_REFERENCE`. |
+| `Currency`    | Currency | —     | Défaut :**déduite du pays**. Si fournie, doit correspondre exactement (sinon `422 CURRENCY_MISMATCH`). |
 | `Description` | string   | —     | Motif affiché au client sur son téléphone               |
 | `Metadata`    | map      | —     | Données libres retournées dans le webhook                |
-
-¹ *Requis par l'API, mais le SDK les remplit pour vous : `Country` → `CM`, `Currency` → devise locale du pays.*
 
 ### Exemple — Cameroun (XAF)
 
@@ -284,21 +286,27 @@ tx, err := client.CashIn.MobileMoney(ctx, hrpay.CashInMobileMoneyParams{
 })
 ```
 
-Réponse (`202`) — tous les champs sont typés :
+Réponse (`202`) — un `*hrpay.Transaction`, tous les champs sont typés :
 
 ```go
 tx.TransactionID // "a959b6ca-a5e6-4485-8f92-0747a574b54e"
+tx.ExternalID    // "COLL-1757600000-a1b2c3d4"
 tx.Reference     // "ref_d5b40df948dc52cc"  ← à stocker pour le suivi
 tx.Status        // "PENDING" (toujours, initialement)
-tx.Type          // "CASHIN"
+tx.Direction     // "CASHIN"
 tx.Amount        // 5000
-tx.Fee           // 75      ← 1,5 % du montant
+tx.Fees          // 75      ← 1,5 % du montant
 tx.FeePercent    // 1.5
 tx.NetAmount     // 4925    ← crédité après confirmation
 tx.Currency      // "XAF"
+tx.OtpRequired   // false (true pour Orange en CI/SN, Wligdicash au BF)
+tx.Provider      // "CARTEVO"  ← informatif, ne pas coder de logique dessus
+tx.ProviderRef   // "sandbox-a1b2c3d4"
 tx.InitiatedAt   // "2026-06-07T17:00:59Z"
 tx.PendingAction // "GET /v1/payments/ref_d5b40df948dc52cc"
 ```
+
+Une fois la transaction résolue, `Transactions.Status`/`.Get` ajoutent `CompletedAt`, `ErrorMessage`, `ErrorCode`, `FailureReasonCategory`, et `WalletBalanceBefore`/`WalletBalanceAfter`.
 
 ### Exemple — Sénégal (XOF, Wave)
 
@@ -430,9 +438,38 @@ final, err := client.Transactions.Poll(ctx, ref, hrpay.PollOptions{
 
 > 💡 **Préférez les webhooks au polling** en production. Le polling est un filet de sécurité.
 
+### Remboursement
+
+```go
+tx, err := client.Transactions.Refund(ctx, "ref_d5b40df948dc52cc")
+// déclenche le webhook payment.refunded ; tx.Status == "REFUNDED"
+```
+
+Un `Idempotency-Key` est requis (généré automatiquement) ; pour rejouer un retry en toute sécurité après une coupure réseau, fournissez la même clé explicitement :
+
+```go
+ctx = hrpay.WithIdempotencyKey(ctx, "refund-commande-42891")
+tx, err := client.Transactions.Refund(ctx, "commande-42891")
+```
+
+> Ne réutilisez **jamais** une `Idempotency-Key` pour une opération différente : la réponse de la première tentative est rejouée telle quelle pendant 24 h, sans vérification que le corps de la requête correspond.
+
+### Frais applicables
+
+Le taux par défaut (2 % flat) n'est **pas garanti** — des taux négociés existent par marchand. Vérifiez toujours le barème réel :
+
+```go
+fees, err := client.Fees.List(ctx)
+for _, f := range fees.Fees {
+	fmt.Printf("%s %s: %.1f%% (défaut plateforme: %.1f%%)\n", f.Country, f.Direction, f.FeePct, f.DefaultFeePct)
+}
+```
+
 ---
 
 ## Solde & Mouvements
+
+> `Wallet.Balance` s'authentifie avec la **Clé B seule** — pas de Transaction Token sur cet appel. C'est géré automatiquement par le SDK.
 
 ```go
 balance, err := client.Wallet.Balance(ctx)
@@ -693,32 +730,102 @@ Import possible aussi via `FileBase64` ou `CSVData` au lieu de `Recipients`.
 
 ## Cartes virtuelles
 
-Cartes Visa/Mastercard prépayées, alimentées depuis votre wallet XAF. Provider : Cartevo.
+Cartes Visa/Mastercard prépayées en **USD**, émises pour vos propres bénéficiaires (employés, clients, prestataires). Provider : Cartevo. Trois étapes **obligatoires**, dans cet ordre : enrôler un porteur (KYC) → financer le wallet USD dédié aux cartes → émettre la carte.
+
+`client.Cards` regroupe trois sous-services, à l'image de `client.Bills` :
+
+- `client.Cards.Customers` — KYC des porteurs
+- `client.Cards.Wallet` — wallet USD dédié, cotation FX, tarification
+- `client.Cards.Virtual` — cycle de vie de la carte elle-même
+
+> ⚠️ **Casse particulière** : contrairement au reste de l'API (`snake_case` partout), l'objet `card` renvoyé par `Create`/`Get`/`List` est sérialisé par le serveur en **PascalCase** (`ID`, `CustomerID`, `CardNetwork`…). Le SDK gère cela pour vous — `hrpay.VirtualCard` a des tags JSON PascalCase pour ce type précis, c'est intentionnel, ne le "corrigez" pas.
+
+### 1. Enrôler un porteur (KYC)
 
 ```go
-// Créer
-card, err := client.Cards.Create(ctx, hrpay.VirtualCardCreateParams{
-	Label:    "Carte Marketing",
-	Currency: hrpay.CurrencyXaf,
-	Amount:   50000, // solde initial
+customer, err := client.Cards.Customers.Create(ctx, hrpay.CardCustomerCreateParams{
+	FirstName: "Jean", LastName: "Dupont", Email: "jean.dupont@client.cm",
+	Country: "Cameroon", CountryIsoCode: "CM", CountryPhoneCode: "+237",
+	PhoneNumber: "690001234", // local uniquement, sans l'indicatif
+	Street: "Rue 1.234, Bonanjo", City: "Douala", State: "Littoral", PostalCode: "00237",
+	IdentificationNumber: "123456789",
+	IDDocumentType:       hrpay.IDDocumentNIN, // NIN | PASSPORT | VOTERS_CARD | DRIVERS_LICENSE
+	DateOfBirth:          "1990-04-12",         // porteur majeur obligatoire
+	IDDocumentFront:      "data:image/jpeg;base64,...",
+	IDDocumentBack:       "data:image/jpeg;base64,...",
 })
-
-// Lister / détailler
-cards, err := client.Cards.List(ctx)
-card, err = client.Cards.Get(ctx, card.ID)
-
-// Recharger depuis le wallet
-card, err = client.Cards.Topup(ctx, card.ID, 25000)
-
-// Geler / dégeler — toutes ces méthodes renvoient la carte mise à jour
-card, err = client.Cards.Freeze(ctx, card.ID)
-card, err = client.Cards.Unfreeze(ctx, card.ID)
-
-// Annuler — IRRÉVERSIBLE
-card, err = client.Cards.Cancel(ctx, card.ID)
-
-fmt.Println(card.Status) // ACTIVE | FROZEN | CANCELLED
+// customer.KYCStatus == "PENDING_REVIEW" — un administrateur HR-Skills Pay
+// doit encore approuver le dossier ; ce n'est jamais instantané et il
+// n'existe aucun appel API pour accélérer cette revue.
 ```
+
+Attendez le statut `ENROLLED` (seul statut permettant l'émission d'une carte) :
+
+```go
+customer, err = client.Cards.Customers.PollEnrollment(ctx, customer.ID, hrpay.PollOptions{
+	// Intervalle par défaut : 5 minutes (hrpay.DefaultKYCPollInterval) — la
+	// revue est humaine, ne pollez pas toutes les quelques secondes.
+	OnStatus: func(status string, attempt int) { log.Printf("KYC: %s", status) },
+})
+```
+
+### 2. Financer le wallet USD cartes
+
+```go
+overview, err := client.Cards.Wallet.Get(ctx) // solde + tarification actuelle
+res, err := client.Cards.Wallet.Fund(ctx, hrpay.CardWalletFundParams{AmountUSD: 10})
+// res.USDBalance — nouveau solde du wallet cartes
+```
+
+`source_currency` n'accepte que `XAF` aujourd'hui — un marchand dont le wallet principal est en XOF/GNF/GMD/CDF ne peut pas encore utiliser les cartes.
+
+### 3. Émettre, gérer, terminer une carte
+
+```go
+res, err := client.Cards.Virtual.Create(ctx, hrpay.VirtualCardCreateParams{
+	CustomerID: customer.ID,
+	Brand:      hrpay.CardBrandVisa, // ou "MC" (normalisé en MASTERCARD)
+	Amount:     20,                  // financement initial en USD
+	Label:      "Marketing Ads",
+})
+if res.Pending {
+	// Émission ambiguë côté fournisseur — réconciliée plus tard
+	// automatiquement (webhook card.created ou worker interne).
+	fmt.Println("carte en attente de confirmation:", res.CardID)
+} else {
+	card := res.Card
+	fmt.Println(card.ID, card.Status, card.ProviderData.MaskedPan)
+}
+
+// Révéler le PAN/CVV en clair — audité côté serveur, jamais journalisé.
+// Ne journalisez et ne persistez JAMAIS ce bloc côté application non plus.
+detail, err := client.Cards.Virtual.Get(ctx, card.ID, hrpay.VirtualCardGetParams{Reveal: true})
+fmt.Println(detail.Sensitive.Number, detail.Sensitive.CVV)
+
+// Recharger / retirer
+topup, err := client.Cards.Virtual.Topup(ctx, card.ID, hrpay.VirtualCardTopupParams{Amount: 50})
+withdraw, err := client.Cards.Virtual.Withdraw(ctx, card.ID, hrpay.VirtualCardWithdrawParams{Amount: 30})
+
+// Geler / dégeler
+_, err = client.Cards.Virtual.Freeze(ctx, card.ID, hrpay.VirtualCardFreezeParams{})
+_, err = client.Cards.Virtual.Unfreeze(ctx, card.ID, hrpay.VirtualCardUnfreezeParams{})
+
+// Terminer — IRRÉVERSIBLE, solde résiduel recrédité au wallet cartes
+result, err := client.Cards.Virtual.Terminate(ctx, card.ID)
+fmt.Println(result.Status, result.Refunded)
+```
+
+### Historique des transactions carte
+
+```go
+txs, err := client.Cards.Virtual.Transactions(ctx, card.ID, hrpay.VirtualCardTransactionsParams{Limit: 50})
+```
+
+> ⚠️ **Pagination 0-indexée pour une carte live** (liée à Cartevo) : `Page: 0` est la première page — contrairement au reste de la plateforme. Une boucle qui commence à `Page: 1` saute la vraie première page.
+
+### Sandbox
+
+Émulation 100 % locale, aucun appel réseau réel vers Cartevo : PAN de test fixe `4111111111111111` / CVV `123`, taux de change fixe 630 XAF/USD, et **aucun webhook** n'est jamais déclenché pour une ressource `is_test: true`.
 
 ---
 
@@ -849,29 +956,47 @@ Le SDK accepte l'en-tête préfixé (`sha256=<hmac>`, format officiel) **et** un
 
 ## Opérateurs & Pays
 
-| Pays           | Code          | Devise | Opérateurs                        |
-| -------------- | ------------- | ------ | ---------------------------------- |
-| Cameroun       | `CountryCm` | XAF    | mtn · orange · camtel            |
-| Sénégal      | `CountrySn` | XOF    | orange · wave · free · expresso |
-| Côte d'Ivoire | `CountryCi` | XOF    | orange · mtn · moov · wave      |
-| Gabon          | `CountryGa` | XAF    | airtel · moov                     |
-| RD Congo       | `CountryCd` | CDF    | airtel · orange · mpesa          |
-| Mali           | `CountryMl` | XOF    | orange · moov                     |
-| Burkina Faso   | `CountryBf` | XOF    | orange · moov · coris            |
-| Togo           | `CountryTg` | XOF    | tmoney · flooz                    |
-| Bénin         | `CountryBj` | XOF    | mtn · moov                        |
-| Guinée        | `CountryGn` | GNF    | orange · mtn · afrimoney         |
-| Gambie         | `CountryGm` | GMD    | afrimoney · qmoney                |
+16 pays couverts pour le Mobile Money (cashin/cashout). CM est activé par défaut pour tout marchand ; les autres pays doivent être **explicitement activés** pour votre compte (sinon `403 COUNTRY_NOT_ACTIVATED`).
 
-**Constantes opérateur :** `OperatorMtn`, `OperatorOrange`, `OperatorMoov`, `OperatorAirtel`, `OperatorMpesa`, `OperatorWave`, `OperatorFree`, `OperatorTmoney`, `OperatorAfrimoney`, `OperatorCamtel`, `OperatorNexttel`, `OperatorCoris`, `OperatorExpresso`, `OperatorFlooz`, `OperatorQmoney`.
+| Pays                    | Code          | Devise | Opérateurs                       | OTP requis            |
+| ----------------------- | ------------- | ------ | --------------------------------- | ---------------------- |
+| Cameroun                | `CountryCm` | XAF    | mtn · orange                    | —                      |
+| Gabon                   | `CountryGa` | XAF    | airtel · moov                   | —                      |
+| Congo Brazzaville       | `CountryCg` | XAF    | airtel · mtn                    | —                      |
+| Tchad                   | `CountryTd` | XAF    | airtel · moov                   | —                      |
+| Rép. Centrafricaine    | `CountryCf` | XAF    | orange                            | —                      |
+| Côte d'Ivoire          | `CountryCi` | XOF    | moov · mtn · orange · wave    | orange                 |
+| Sénégal               | `CountrySn` | XOF    | expresso · free · orange · wave | orange                 |
+| Mali                    | `CountryMl` | XOF    | moov · orange                   | —                      |
+| Burkina Faso            | `CountryBf` | XOF    | moov · orange · wligdicash    | orange, wligdicash     |
+| Togo                    | `CountryTg` | XOF    | moov · tmoney                   | —                      |
+| Bénin                  | `CountryBj` | XOF    | moov · mtn · celtiis · coris  | —                      |
+| Niger                   | `CountryNe` | XOF    | airtel                            | —                      |
+| Guinée-Bissau          | `CountryGw` | XOF    | orange                            | —                      |
+| RD Congo                | `CountryCd` | CDF    | airtel · mpesa · orange · afrimoney | —                 |
+| Guinée Conakry         | `CountryGn` | GNF    | mtn · orange                    | —                      |
+| Gambie                  | `CountryGm` | GMD    | afrimoney                         | —                      |
+
+**Constantes opérateur (Mobile Money) :** `OperatorMtn`, `OperatorOrange`, `OperatorMoov`, `OperatorAirtel`, `OperatorMpesa`, `OperatorWave`, `OperatorFree`, `OperatorTmoney`, `OperatorAfrimoney`, `OperatorWligdicash`, `OperatorCeltiis`, `OperatorCoris`, `OperatorExpresso`. (`OperatorCamtel`, `OperatorNexttel`, `OperatorFlooz`, `OperatorQmoney` existent aussi mais sont réservés aux domaines Airtime/Data/Payroll — ce ne sont **pas** des opérateurs Mobile Money valides.)
 
 **Devises :** `CurrencyXaf`, `CurrencyXof`, `CurrencyCdf`, `CurrencyGnf`, `CurrencyGmd` (+ `CurrencyUsd`, `CurrencyEur` pour les cartes).
 
-La devise locale est déduite du pays quand elle est omise :
-
 ```go
-hrpay.CurrencyForCountry[hrpay.CountrySn] // CurrencyXof
+hrpay.CurrencyForCountry[hrpay.CountrySn]                // CurrencyXof — devise locale déduite du pays
+hrpay.MobileMoneyOperatorsByCountry[hrpay.CountryCi]     // opérateurs valides pour ce pays (référence/UX)
+hrpay.OtpRequiredOperators[hrpay.CountryCi]              // opérateurs exigeant une confirmation OTP
 ```
+
+> Ce tableau et ces maps documentent l'état du catalogue au moment de la rédaction — ils ne sont **pas** une garantie contractuelle et peuvent évoluer côté plateforme sans préavis (la source vivante, `GET /v1/countries/supported`, s'authentifie par JWT tableau de bord et n'est pas exposée par ce SDK). Ne construisez pas de blocage strict dessus.
+
+---
+
+## Pièges connus
+
+- **`GET /v1/countries/supported`** (catalogue pays/opérateurs par marchand, avec statut d'activation) n'est **pas** exposé par ce SDK : il s'authentifie par session JWT tableau de bord, un mode entièrement différent du couple Clé API + Transaction Token utilisé partout ailleurs ici. Consultez-le depuis le tableau de bord, ou utilisez `hrpay.MobileMoneyOperatorsByCountry` comme référence non contractuelle.
+- **`POST /v1/transfers/express-union` et `POST /v1/transfers/yoome`** existent côté API mais sont aujourd'hui des stubs purs (aucun appel fournisseur réel, réponse `PENDING` factice) — ce SDK n'expose volontairement **aucune** méthode pour ces routes.
+- **`GET /v1/operators` et `GET /v1/services/catalogue`** sont legacy/potentiellement obsolètes côté API — préférez le tableau `MobileMoneyOperatorsByCountry` de ce SDK (lui-même non contractuel, voir ci-dessus) plutôt que ces endpoints.
+- La méthode historique `CashIn.Initiate` (`/v1/payments/initiate`) a été retirée — elle ne correspondait à aucune route documentée. Utilisez `CashIn.MobileMoney`.
 
 ---
 
@@ -888,15 +1013,34 @@ Format renvoyé par l'API : `{"error": "CODE", "message": "...", "details": {...
 | 401  | `MISSING_TRANSACTION_TOKEN`   | `ErrMissingTransactionToken`   |
 | 401  | `INVALID_TRANSACTION_TOKEN`   | `ErrInvalidTransactionToken`   |
 | 402  | `WALLET_BALANCE_INSUFFICIENT` | `ErrWalletBalanceInsufficient` |
+| 402  | `WALLET_NOT_FOUND`            | `ErrWalletNotFound`            |
 | 403  | `KYC_NOT_APPROVED`            | `ErrKycNotApproved`            |
 | 403  | `WALLET_FROZEN`               | `ErrWalletFrozen`              |
+| 403  | `COUNTRY_NOT_ACTIVATED`       | `ErrCountryNotActivated`       |
+| 403  | `SANDBOX_KEY_REQUIRED`        | `ErrSandboxKeyRequired`        |
+| 403  | `SANDBOX_PATH_REQUIRED`       | `ErrSandboxPathRequired`       |
 | 409  | `IDEMPOTENCY_KEY_CONFLICT`    | `ErrIdempotencyKeyConflict`    |
+| 409  | `DUPLICATE_REFERENCE`         | `ErrDuplicateReference`        |
+| 422  | `INVALID_AMOUNT`              | `ErrInvalidAmount`             |
+| 422  | `INVALID_OPERATOR_COUNTRY`    | `ErrInvalidOperatorCountry`    |
+| 422  | `MISSING_PHONE`               | `ErrMissingPhone`              |
+| 422  | `INVALID_PHONE`               | `ErrInvalidPhone`              |
 | 422  | `OPERATOR_NOT_AVAILABLE`      | `ErrOperatorNotAvailable`      |
 | 422  | `CURRENCY_MISMATCH`           | `ErrCurrencyMismatch`          |
+| 422  | `AMOUNT_EXCEEDS_LIMIT`        | `ErrAmountExceedsLimit`        |
+| 422  | `DAILY_LIMIT_EXCEEDED`        | `ErrDailyLimitExceeded`        |
+| 422  | `cashout_refused`             | `ErrCashoutRefused`            |
 | 429  | `RATE_LIMIT_EXCEEDED`         | `ErrRateLimitExceeded`         |
+| 429  | `PLAN_TX_LIMIT_REACHED`       | `ErrPlanTxLimitReached`        |
+| 429  | `TOO_MANY_REQUESTS`           | `ErrTooManyRequests`           |
 | 500  | `INTERNAL_ERROR`              | `ErrInternalError`             |
 | 503  | `PROVIDER_NOT_CONFIGURED`     | `ErrProviderNotConfigured`     |
+| 503  | `PROVIDER_UNAVAILABLE`        | `ErrProviderUnavailable`       |
 | 504  | `PROVIDER_TIMEOUT`            | `ErrProviderTimeout`           |
+
+`ErrCashoutRefused` couvre tous les refus opérateur sur un Cash-Out (client rejeté, PIN invalide, fonds bénéficiaire insuffisants…) — lisez `err.Message` (déjà humanisé) plutôt que de tenter de parser le code numérique brut (703201, 703202… voir les constantes `CashoutRefusalXxx` pour référence).
+
+**Cartes virtuelles** — enveloppe distincte `{"code": "...", "message": "..."}` (**sans** champ `success`), gérée automatiquement par `ParseApiError`. Sentinelles notables : `ErrCustomerNotEnrolled`, `ErrEnvironmentMismatch`, `ErrCardNotActive`, `ErrCardNotEligible`, `ErrCardAlreadyTerminated`, `ErrCardNotFound`, `ErrCardCustomerNotFound`, `ErrCardCustomerExists`, `ErrRequestInProgress`, `ErrMaxCardsReached`, `ErrCardBalanceInsufficient`, `ErrCardCreationRejected`, `ErrCardProviderUnavailable`, `ErrCardRateUnavailable`, `ErrIdempotencyUnavailable`, `ErrPlanFeatureNotAvailable`. Note : le code `insufficient_balance` (422, wallet USD cartes) partage intentionnellement la sentinelle `ErrWalletBalanceInsufficient` avec le cas Mobile Money (402) — distinguez via `StatusCode` ou le type Go concret (`*ValidationError` vs `*WalletError`), pas via la sentinelle seule.
 
 ### Détecter un cas métier avec `errors.Is`
 

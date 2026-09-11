@@ -10,56 +10,59 @@ import (
 // until available_at (48h hold).
 type WalletHold struct {
 	Amount      float64 `json:"amount"`
+	HeldSince   string  `json:"held_since,omitempty"`
 	AvailableAt string  `json:"available_at"`
 }
 
 type WalletBalance struct {
+	WalletID    string `json:"wallet_id,omitempty"`
 	AccountType string `json:"account_type"`
 	Balance     struct {
 		Available float64 `json:"available"`
 		Held      float64 `json:"held"`
 		Total     float64 `json:"total"`
 	} `json:"balance"`
-	Holds []WalletHold `json:"holds,omitempty"`
-	Currency    string `json:"currency"`
-	Environment string `json:"environment"`
-	IsFrozen    bool   `json:"is_frozen,omitempty"`
-	FrozenReason string `json:"frozen_reason,omitempty"`
-	HoldHours   int    `json:"hold_hours,omitempty"`
-	Limits      *struct {
-		DailyCashInLimit       float64 `json:"daily_cashin_limit"`
-		DailyCashInRemaining   float64 `json:"daily_cashin_remaining"`
-		DailyCashInUsed        float64 `json:"daily_cashin_used"`
-		DailyCashOutLimit      float64 `json:"daily_cashout_limit"`
-		DailyCashOutRemaining  float64 `json:"daily_cashout_remaining"`
-		DailyCashOutUsed       float64 `json:"daily_cashout_used"`
-		MaxSingleCashIn        float64 `json:"max_single_cashin"`
-		MaxSingleCashOut       float64 `json:"max_single_cashout"`
-		MinSingleCashIn        float64 `json:"min_single_cashin"`
-		MinSingleCashOut       float64 `json:"min_single_cashout"`
-		MonthlyCashInLimit     float64 `json:"monthly_cashin_limit"`
-		MonthlyCashInUsed      float64 `json:"monthly_cashin_used"`
-		MonthlyCashOutLimit    float64 `json:"monthly_cashout_limit"`
-		MonthlyCashOutUsed     float64 `json:"monthly_cashout_used"`
+	Holds        []WalletHold `json:"holds,omitempty"`
+	Currency     string       `json:"currency"`
+	Environment  string       `json:"environment"`
+	IsFrozen     bool         `json:"is_frozen,omitempty"`
+	FrozenReason string       `json:"frozen_reason,omitempty"`
+	HoldHours    int          `json:"hold_hours,omitempty"`
+	UpdatedAt    string       `json:"updated_at,omitempty"`
+	Limits       *struct {
+		DailyCashInLimit      float64 `json:"daily_cashin_limit"`
+		DailyCashInRemaining  float64 `json:"daily_cashin_remaining"`
+		DailyCashInUsed       float64 `json:"daily_cashin_used"`
+		DailyCashOutLimit     float64 `json:"daily_cashout_limit"`
+		DailyCashOutRemaining float64 `json:"daily_cashout_remaining"`
+		DailyCashOutUsed      float64 `json:"daily_cashout_used"`
+		MaxSingleCashIn       float64 `json:"max_single_cashin"`
+		MaxSingleCashOut      float64 `json:"max_single_cashout"`
+		MinSingleCashIn       float64 `json:"min_single_cashin"`
+		MinSingleCashOut      float64 `json:"min_single_cashout"`
+		MonthlyCashInLimit    float64 `json:"monthly_cashin_limit"`
+		MonthlyCashInUsed     float64 `json:"monthly_cashin_used"`
+		MonthlyCashOutLimit   float64 `json:"monthly_cashout_limit"`
+		MonthlyCashOutUsed    float64 `json:"monthly_cashout_used"`
 	} `json:"limits,omitempty"`
 	StatsToday *struct {
-		CashInCount    int     `json:"cashin_count"`
-		CashInVolume   float64 `json:"cashin_volume"`
-		CashOutCount   int     `json:"cashout_count"`
-		CashOutVolume  float64 `json:"cashout_volume"`
-		FeesPaid       float64 `json:"fees_paid"`
+		CashInCount   int     `json:"cashin_count"`
+		CashInVolume  float64 `json:"cashin_volume"`
+		CashOutCount  int     `json:"cashout_count"`
+		CashOutVolume float64 `json:"cashout_volume"`
+		FeesPaid      float64 `json:"fees_paid"`
 	} `json:"stats_today,omitempty"`
 }
 
 type WalletMovement struct {
-	ID           string    `json:"id"`
-	Type         string    `json:"type"` // CREDIT, DEBIT
-	Amount       float64   `json:"amount"`
-	Currency     string    `json:"currency"`
-	Reference    string    `json:"reference,omitempty"`
-	Description  string    `json:"description,omitempty"`
-	BalanceAfter float64   `json:"balance_after"`
-	CreatedAt    string    `json:"created_at"`
+	ID           string  `json:"id"`
+	Type         string  `json:"type"` // CREDIT, DEBIT
+	Amount       float64 `json:"amount"`
+	Currency     string  `json:"currency"`
+	Reference    string  `json:"reference,omitempty"`
+	Description  string  `json:"description,omitempty"`
+	BalanceAfter float64 `json:"balance_after"`
+	CreatedAt    string  `json:"created_at"`
 }
 
 type WalletMovementsParams struct {
@@ -74,8 +77,10 @@ type WalletService struct {
 }
 
 // Balance retrieves wallet balances and limits.
+// Unlike every other payment endpoint, this one authenticates with the secret
+// key alone (Authorization: Bearer <Clé B>) — no X-Transaction-Token is sent.
 func (s *WalletService) Balance(ctx context.Context) (*WalletBalance, error) {
-	respBody, err := s.client.request(ctx, "GET", PathWalletBalance, nil, nil)
+	respBody, err := s.client.requestWithOptions(ctx, "GET", PathWalletBalance, nil, nil, requestOptions{AuthMode: authModeSecretOnly})
 	if err != nil {
 		return nil, err
 	}

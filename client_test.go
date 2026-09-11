@@ -90,11 +90,13 @@ func TestClient_MiddlewarePipeline(t *testing.T) {
 			return
 		}
 
-		// Mock wallet balance endpoint
+		// Mock wallet balance endpoint. Unlike every other payment endpoint,
+		// this one authenticates with the secret key ALONE — no
+		// X-Transaction-Token at all.
 		if r.URL.Path == PathWalletBalance {
 			auth := r.Header.Get("Authorization")
 			token := r.Header.Get("X-Transaction-Token")
-			if auth != "Bearer hrsk_pk_test_KEY" || token != "token_123" {
+			if auth != "Bearer hrsk_sk_test_SECRET" || token != "" {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
@@ -159,6 +161,13 @@ func TestCashIn_MobileMoney(t *testing.T) {
 			var payload map[string]interface{}
 			_ = json.NewDecoder(r.Body).Decode(&payload)
 
+			auth := r.Header.Get("Authorization")
+			token := r.Header.Get("X-Transaction-Token")
+			if auth != "Bearer hrsk_sk_test_SECRET" || token != "token_123" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+
 			if payload["operator"] != "ORANGE" || payload["phone_number"] != "237655500393" {
 				w.WriteHeader(http.StatusBadRequest)
 				return
@@ -203,6 +212,7 @@ func TestCashIn_MobileMoney(t *testing.T) {
 	res, err := client.CashIn.MobileMoney(ctx, CashInMobileMoneyParams{
 		PhoneNumber: "237655500393",
 		Operator:    OperatorOrange,
+		Country:     CountryCm,
 		Amount:      5000,
 	})
 
@@ -217,8 +227,8 @@ func TestCashIn_MobileMoney(t *testing.T) {
 		t.Errorf("expected status PENDING, got %s", res.Status)
 	}
 	// Regression: the field is "fee", not "fees". The old tag never unmarshalled.
-	if res.Fee != 75 {
-		t.Errorf("expected fee 75, got %f", res.Fee)
+	if res.Fees != 75 {
+		t.Errorf("expected fee 75, got %f", res.Fees)
 	}
 	if res.FeePercent != FeePercentCashIn {
 		t.Errorf("expected fee_percent 1.5, got %f", res.FeePercent)
@@ -229,8 +239,8 @@ func TestCashIn_MobileMoney(t *testing.T) {
 	if res.TransactionID != "a959b6ca-a5e6-4485-8f92-0747a574b54e" {
 		t.Errorf("unexpected transaction_id %q", res.TransactionID)
 	}
-	if res.Type != "CASHIN" {
-		t.Errorf("expected type CASHIN, got %s", res.Type)
+	if res.Direction != "CASHIN" {
+		t.Errorf("expected type CASHIN, got %s", res.Direction)
 	}
 }
 
@@ -275,7 +285,7 @@ func TestWebhooks_VerifySignature(t *testing.T) {
 func TestWebhooks_ConstructEvent(t *testing.T) {
 	client, _ := NewClient(WithAPIKeys("hrsk_pk_test_KEY", "hrsk_sk_test_SECRET"))
 
-	payload := `{"id":"evt_123","type":"payment.succeeded","created_at":"2026-06-07T17:00:59Z"}`
+	payload := `{"id":"evt_123","event":"payment.succeeded","merchant_id":"8f2c1e4a-0000-0000-0000-000000000000","created_at":"2026-06-07T17:00:59Z"}`
 	secret := "whsec_test"
 
 	mac := hmac.New(sha256.New, []byte(secret))
@@ -366,7 +376,8 @@ func TestParseApiError_ReadsCodeFromErrorField(t *testing.T) {
 	}{
 		// 403 defaults to KYC_NOT_APPROVED — WALLET_FROZEN proves "error" is read.
 		{403, `{"error":"WALLET_FROZEN","message":"gelé"}`, ErrWalletFrozen, "wallet frozen"},
-		// 422 defaults to OPERATOR_NOT_AVAILABLE — CURRENCY_MISMATCH proves it too.
+		// 422 defaults to VALIDATION_ERROR — CURRENCY_MISMATCH proves the
+		// explicit "error" field is read instead.
 		{422, `{"error":"CURRENCY_MISMATCH","message":"devise"}`, ErrCurrencyMismatch, "currency mismatch"},
 		// 400 defaults to VALIDATION_ERROR.
 		{400, `{"error":"MISSING_REQUIRED_FIELD","message":"champ"}`, ErrMissingRequiredField, "missing field"},
@@ -416,7 +427,7 @@ func TestParseApiError_DefaultsCodeFromStatus(t *testing.T) {
 		402: ErrWalletBalanceInsufficient,
 		403: ErrKycNotApproved,
 		409: ErrIdempotencyKeyConflict,
-		422: ErrOperatorNotAvailable,
+		422: ErrValidation,
 		429: ErrRateLimitExceeded,
 		503: ErrProviderNotConfigured,
 		504: ErrProviderTimeout,

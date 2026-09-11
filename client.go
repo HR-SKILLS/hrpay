@@ -29,12 +29,13 @@ type Client struct {
 	CashOut      *CashOutService
 	Transactions *TransactionsService
 	Wallet       *WalletService
+	Fees         *FeesService
 	Airtime      *AirtimeService
 	Data         *DataService
 	Bills        *BillsService
 	Commissions  *CommissionsService
 	Payroll      *PayrollService
-	Cards        *VirtualCardsService
+	Cards        *CardsService
 	Analytics    *AnalyticsService
 	PaymentLinks *PaymentLinksService
 	Webhooks     *WebhooksService
@@ -108,7 +109,7 @@ func NewClient(opts ...Option) (*Client, error) {
 	pipeline.Use(createRetryMiddleware(config.MaxRetries))
 
 	// 4. Auth
-	pipeline.Use(createAuthMiddleware(config.PublicKey, authMgr))
+	pipeline.Use(createAuthMiddleware(config.SecretKey, authMgr))
 
 	// 5. Idempotence
 	pipeline.Use(createIdempotencyMiddleware())
@@ -132,10 +133,15 @@ func NewClient(opts ...Option) (*Client, error) {
 	}
 	c.Commissions = &CommissionsService{client: c}
 	c.Payroll = &PayrollService{client: c}
-	c.Cards = &VirtualCardsService{client: c}
+	c.Cards = &CardsService{
+		Customers: &CardCustomersService{client: c},
+		Wallet:    &CardWalletService{client: c},
+		Virtual:   &VirtualCardsService{client: c},
+	}
 	c.Analytics = &AnalyticsService{client: c}
 	c.PaymentLinks = &PaymentLinksService{client: c}
 	c.Webhooks = &WebhooksService{client: c}
+	c.Fees = &FeesService{client: c}
 
 	return c, nil
 }
@@ -145,7 +151,18 @@ func (c *Client) Use(middleware Middleware) {
 	c.pipeline.Use(middleware)
 }
 
+// requestOptions carries per-call deviations from the default request
+// behavior. The zero value (authModeSecretAndToken) is what nearly every
+// service method wants, so request() below stays the common-case entry point.
+type requestOptions struct {
+	AuthMode authMode
+}
+
 func (c *Client) request(ctx context.Context, method, path string, body []byte, params map[string]string) (resBody []byte, finalErr error) {
+	return c.requestWithOptions(ctx, method, path, body, params, requestOptions{})
+}
+
+func (c *Client) requestWithOptions(ctx context.Context, method, path string, body []byte, params map[string]string, opts requestOptions) (resBody []byte, finalErr error) {
 	defer func() {
 		if r := recover(); r != nil {
 			finalErr = &UnknownError{
@@ -181,11 +198,12 @@ func (c *Client) request(ctx context.Context, method, path string, body []byte, 
 	}
 
 	mctx := &MiddlewareContext{
-		Method:  method,
-		URL:     fullURL,
-		Headers: headers,
-		Body:    body,
-		Meta:    make(map[string]interface{}),
+		Method:   method,
+		URL:      fullURL,
+		Headers:  headers,
+		Body:     body,
+		Meta:     make(map[string]interface{}),
+		AuthMode: opts.AuthMode,
 	}
 
 	// Composed pipeline execution with transport client inside circuit breaker
